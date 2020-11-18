@@ -1,92 +1,122 @@
 use lib '../lib';
-use Test::More tests => 12;
+use Test::More tests => 26;
 use Test::Deep;
-use LWP::UserAgent;
-use JSON qw(to_json from_json);
-use Lacuna::DB;
 use Data::Dumper;
 use 5.010;
 
 my $result;
 
-$result = post('empire', 'is_name_available', ['The Federation']);
+use TestHelper;
+my $tester = TestHelper->new;
+$tester->cleanup;
+
+
+$result = $tester->post('empire', 'is_name_available', [$tester->empire_name]);
 is($result->{result}, 1, 'empire name is available');
 
-my $fed = {
-    name        => 'The Federation',
-    species_id  => 'human_species',
-    password    => '123qwe',
-    password1   => '123qwe',
+my $empire = {
+    name        => $tester->empire_name,
+    password    => $tester->empire_password,
+    password1   => $tester->empire_password,
+    email       => 'joe@blow.com',
 };
 
-$fed->{name} = 'XX>';
-$result = post('empire', 'create', $fed);
+$empire->{name} = 'XX>';
+$result = $tester->post('empire', 'create', $empire);
 is($result->{error}{code}, 1000, 'empire name has funky chars');
 
-$fed->{name} = '';
-$result = post('empire', 'create', $fed);
+$empire->{name} = '';
+$result = $tester->post('empire', 'create', $empire);
 is($result->{error}{code}, 1000, 'empire name too short');
 
-$fed->{name} = 'abc def ghi jkl mno pqr stu vwx yz 0123456789';
-$result = post('empire', 'create', $fed);
+$empire->{name} = 'abc def ghi jkl mno pqr stu vwx yz 0123456789';
+$result = $tester->post('empire', 'create', $empire);
 is($result->{error}{code}, 1000, 'empire name too long');
 
-$fed->{name} = 'The Federation';
-$fed->{password} = 'abc';
-$result = post('empire', 'create', $fed);
+$empire->{name} = $tester->empire_name;
+$empire->{password} = 'abc';
+$result = $tester->post('empire', 'create', $empire);
 is($result->{error}{code}, 1001, 'empire password too short');
 
-$fed->{password} = 'abc123';
-$result = post('empire', 'create', $fed);
+$empire->{password} = 'abc123';
+$result = $tester->post('empire', 'create', $empire);
 is($result->{error}{code}, 1001, 'empire passwords do not match');
 
-$fed->{password} = '123qwe';
-$fed->{species_id} = 'xxx';
-$result = post('empire', 'create', $fed);
-is($result->{error}{code}, 1002, 'empire species does not exist');
+$empire->{password} = $tester->empire_password;
+$result = $tester->post('empire', 'create', $empire);
+my $empire_id = $result->{result};
+ok(defined $empire_id, 'empire created');
 
-$fed->{species_id} = 'human_species';
-$result = post('empire', 'create', $fed);
-ok(exists $result->{result}{empire_id}, 'empire created');
-ok(exists $result->{result}{session_id}, 'empire logged in after creation');
-my $fed_id = $result->{result}{empire_id};
+$result = $tester->post('empire', 'is_name_available', [$tester->empire_name]);
+is($result->{error}{code}, 1000, 'empire name not available');
+
+$result = $tester->post('empire', 'found', [$empire_id]);
 my $session_id = $result->{result}{session_id};
+ok(defined $session_id, 'empire logged in after foundation');
 
-$result = post('empire', 'is_name_available', ['The Federation']);
-is($result->{result}, 0, 'empire name not available');
-
-$result = post('empire', 'logout', [$session_id]);
+$result = $tester->post('empire', 'logout', [$session_id]);
 is($result->{result}, 1, 'logout');
 
-$result = post('empire', 'login', ['the Federation','123qwe']);
-ok(exists $result->{result}, 'login');
-$session_id = $result->{result};
+$result = $tester->post('empire', 'login', [$tester->empire_name,$tester->empire_password]);
+ok(exists $result->{result}{session_id}, 'login');
+cmp_ok($result->{result}{status}{server}{version}, '>=', 1, 'version number');
+cmp_ok($result->{result}{status}{server}{star_map_size}{x}[1], '>=', 1, 'map size');
+$session_id = $result->{result}{session_id};
+
+$result = $tester->post('empire', 'set_status_message', [$session_id,'woot!']);
+
+$result = $tester->post('empire', 'view_profile', [$session_id]);
+ok(exists $result->{result}{profile}, 'view profile');
+ok(exists $result->{result}{profile}{status_message}, 'can set status message');
+my @medal_ids = keys %{$result->{result}{profile}{medals}};
+my $private_medal_id = pop @medal_ids;
+
+my %profile = (
+    status_message  => 'Whoopie!',
+    description     => 'test',
+    public_medals   => \@medal_ids,
+    sitter_password => 'testsitter',
+);
+$result = $tester->post('empire', 'edit_profile', [$session_id, \%profile]);
+is($result->{result}{profile}{description}, 'test', 'description set in profile');
+is($result->{result}{profile}{status_message}, 'Whoopie!', 'status message set in profile');
+is($result->{result}{profile}{medals}{$private_medal_id}{public}, 0, 'medal set private');
+
+$result = $tester->post('empire', 'view_public_profile', [$session_id, $empire_id]);
+is($result->{result}{profile}{status_message}, 'Whoopie!', 'public profile works');
+
+$result = $tester->post('empire', 'invite_friend', [$session_id, $empire_id, 'tavis@isajerk.com']);
+ok($result->{result}, 'can invite a friend');
+
+$result = $tester->post('empire', 'find', [$session_id, 'TLE']);
+is($result->{result}{empires}[0]{id}, $empire_id, 'empire search works');
+
+$result = $tester->post('empire', 'get_status', [$session_id]);
+ok(exists $result->{result}{empire}{planets}, 'got starting resources');
 
 
+$result = $tester->post('empire', 'login', [$tester->empire_name, 'broken sitter password']);
+is($result->{error}{code}, 1004, 'broken sitter password');
 
+$result = $tester->post('empire', 'login', [$tester->empire_name, 'testsitter']);
+ok(exists $result->{result}{session_id}, 'login with sitter password');
 
-
-
-sub post {
-    my ($url, $method, $params) = @_;
-    my $content = {
-        jsonrpc     => '2.0',
-        id          => 1,
-        method      => $method,
-        params      => $params,
-    };
-    my $ua = LWP::UserAgent->new;
-    $ua->timeout(10);
-    my $response = $ua->post('http://localhost:5000/'.$url,
-        Content_Type    => 'application/json',
-        Content         => to_json($content),
-        Accept          => 'application/json',
-        );
-    return from_json($response->content);
-}
+my $empire2 = $empire;
+$empire2->{name} = 'essentia code';
+$empire2->{email} = 'test@example.com';
+$result = $tester->post('empire', 'create', $empire2);
+$empire2->{id} = $result->{result};
+$result = $tester->post('empire', 'found', [$empire2->{id}]);
+my $e2 = Lacuna->db->resultset('Lacuna::DB::Result::Empire')->find($empire2->{id});
+$e2->add_essentia(100, 'test')->update;
+$result = $tester->post('empire', 'get_status', [$result->{result}{session_id}]);
+ok($result->{result}{empire}{essentia} > 99, 'added essentia works');
+$e2->delete;
+my $code = Lacuna->db->resultset('Lacuna::DB::Result::EssentiaCode')->search({description=>'essentia code deleted'},{rows=>1})->single;
+is($result->{result}{empire}{essentia}, $code->amount, 'you get a proper essentia code');
 
 END {
-    my $db = Lacuna::DB->new(access_key => $ENV{SIMPLEDB_ACCESS_KEY}, secret_key => $ENV{SIMPLEDB_SECRET_KEY}, cache_servers => [{host=>'127.0.0.1', port=>11211}]);
-    $db->domain('empire')->find($fed_id)->delete;
-    $db->domain('session')->find($session_id)->delete;
+    $tester->cleanup;
+    Lacuna->db->resultset('Lacuna::DB::Result::EssentiaCode')->delete;
+    Lacuna->db->resultset('Lacuna::DB::Result::Empire')->search({name => 'essentia code'})->delete;
 }

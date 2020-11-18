@@ -1,53 +1,35 @@
 use lib '../lib';
-use Test::More tests => 2;
+use Test::More tests => 5;
 use Test::Deep;
-use LWP::UserAgent;
-use JSON qw(to_json from_json);
-use Lacuna::DB;
 use Data::Dumper;
 use 5.010;
 
+
+use TestHelper;
+my $tester = TestHelper->new->generate_test_empire;
+my $session_id = $tester->session->id;
+my $home_planet = $tester->empire->home_planet;
+
 my $result;
 
-my $fed = {
-    name        => 'The Federation',
-    species_id  => 'human_species',
-    password    => '123qwe',
-    password1   => '123qwe',
-};
-$result = post('empire', 'create', $fed);
-my $fed_id = $result->{result}{empire_id};
-my $session_id = $result->{result}{session_id};
 
-$result = post('map','get_stars',[$session_id, -3,-3,2,2,0]);
-is(ref $result->{result}, 'ARRAY', 'get stars');
+my $star_id = $home_planet->star_id;
 
-$result = post('map','get_stars',[$session_id, -30,-30,30,30,0]);
+$result = $tester->post('map','get_stars',[$session_id, -3,-3,2,2]);
+is(ref $result->{result}{stars}, 'ARRAY', 'get stars');
+cmp_ok(scalar(@{$result->{result}{stars}}), '>', 0, 'get stars count');
+my $other_star = $result->{result}{stars}[0]{id};
+
+$result = $tester->post('map','get_stars',[$session_id, -30,-30,30,30]);
 is($result->{error}{code}, 1003, 'get stars too big');
 
+$result = $tester->post('map','get_star', [$session_id, $star_id]);
+is($result->{result}{star}{id},$star_id, 'get star system');
 
+$result = $tester->post('map','check_star_for_incoming_probe', [$session_id, $star_id]);
+is($result->{result}{incoming_probe}, 0, 'gcheck_star_for_incoming_probe');
 
-
-sub post {
-    my ($url, $method, $params) = @_;
-    my $content = {
-        jsonrpc     => '2.0',
-        id          => 1,
-        method      => $method,
-        params      => $params,
-    };
-    my $ua = LWP::UserAgent->new;
-    $ua->timeout(10);
-    my $response = $ua->post('http://localhost:5000/'.$url,
-        Content_Type    => 'application/json',
-        Content         => to_json($content),
-        Accept          => 'application/json',
-        );
-    return from_json($response->content);
-}
 
 END {
-    my $db = Lacuna::DB->new(access_key => $ENV{SIMPLEDB_ACCESS_KEY}, secret_key => $ENV{SIMPLEDB_SECRET_KEY}, cache_servers => [{host=>'127.0.0.1', port=>11211}]);
-    $db->domain('empire')->find($fed_id)->delete;
-    $db->domain('session')->find($session_id)->delete;
+    $tester->cleanup;
 }
